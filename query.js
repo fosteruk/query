@@ -162,8 +162,9 @@
           else if (Array.isArray(constraint))  return this.$in(value, constraint);
           else if (constraint && typeof constraint === 'object') {
             if (constraint instanceof Date) return this.$eq(value, constraint.getTime())
+            else if (constraint.$regex) return this.$regex(value, new RegExp(constraint.$regex, constraint.$options))
+            else if (constraint instanceof RegExp) return this.$regex(value, constraint)
             else {
-              if (constraint.$regex) return this.$regex(value, new RegExp(constraint.$regex, constraint.$options))
               for (var key in constraint) {
                 if (!this[key])  return this.$eq(value, constraint, parentKey)
                 else if (!this[key](value, constraint[key], parentKey))  return false;
@@ -171,12 +172,13 @@
               return true;
             }
           }
+          else if (constraint === '' || constraint === null || constraint === undefined)  return this.$null(value);
           else if (Array.isArray(value)) {
             for (var i = 0; i < value.length; i++)
               if (this.$eq(value[i], constraint)) return true;
             return false;
           }
-          else if (constraint === '' || constraint === null || constraint === undefined)  return this.$null(value);
+
           else return this.$eq(value, constraint);
         },
 
@@ -221,7 +223,6 @@
           else {
             return _.isEqual(value, constraint);
           }
-
         },
 
         $not: function (values, constraint) {
@@ -278,6 +279,7 @@
             return true;
           }
           else if (Array.isArray(values)) {
+            if (values.length ==0) return true;
             for (var v = 0; v < values.length; v++) {
               if (!this.$null(values[v])) {
                 return false;
@@ -348,16 +350,17 @@
         },
 
         $regex: function (values, constraint) {
-          var result = false;
+          var result = 0;
+
           if (Array.isArray(values)) {
             for (var i = 0; i < values.length; i++) {
-              if (constraint.test(values[i])) {
+              //see https://stackoverflow.com/questions/3891641/regex-test-only-works-every-other-time
+              if ((new RegExp(constraint)).test(values[i])) {
                 return true;
               }
             }
           }
           else return constraint.test(values);
-
         },
 
         $gte: function (values, ref) {
@@ -448,6 +451,37 @@
     return sub;
   };
 
+  // dot notation for deep Mongo queries including arrays, optional for performance
+  Query.undotArray = function (obj, key) {
+    var keys = key.split('.'), sub = obj;
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      if (Array.isArray(sub)) {
+        var intKey = parseInt(key);
+        if (!isNaN(intKey)) {
+          // Array key was a number e.g some.path.5
+          sub = sub[intKey];
+        } else {
+          // Prop name was not a number
+          if (Array.isArray(sub[0])) {
+            // Array of arrays - flatten
+            sub = sub.reduce(function(result, element) {
+              return result.concat(element);
+            }, []);
+          }
+          // must be a prop name from object within the array
+          sub = sub.map(function(value){
+            // Recursive to handle multiple nested arrays
+            return Query.undotArray(value, key);
+          });
+        } 
+      } else {
+        sub = sub[key];
+      }
+    }
+    return sub;
+  };
+
   Query.lhs.rhs.$equal = Query.lhs.rhs.$eq;
   Query.lhs.rhs.$any = Query.lhs.rhs.$or;
   Query.lhs.rhs.$all = Query.lhs.rhs.$and;
@@ -455,10 +489,11 @@
   Query.satisfies = function (row, constraints, getter) {
     return this.lhs._rowsatisfies(row, constraints, getter);
   }
-
-  Array.prototype.query = function (q) {
-    return Query.query(this, q);
-  }
+  
+  // PSV 2020-05-15 Removed per PR#1
+  // Array.prototype.query = function (q) {
+  //   return Query.query(this, q);
+  // }
 
   //This allows a query object with regex values to be serialized to JSON
   //http://stackoverflow.com/questions/12075927/serialization-of-regexp
